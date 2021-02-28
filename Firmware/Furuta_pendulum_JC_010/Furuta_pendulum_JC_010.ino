@@ -8,7 +8,7 @@
 byte pp = 7;                  //BLDC motor number of pole pairs
 byte sourceVoltage = 12;      //Voltage of your power source [Volts]
 
-//#######_CONTROLLER PARAMETERS_#######
+//#######_SIMPLEFOC PARAMETERS_#######
 float lpFilter = 0.00;
 float voltageRamp = 25;       //Change in voltage allowed [Volts per sec]
 float voltageLimit = 0.8;
@@ -18,10 +18,7 @@ float velocityLimit = 2000;   //Velocity limit [rpm]
 //Datasheet: www.ti.com/lit/ds/symlink/drv8305.pdf
 #define enGate 17       //Chip Enable
 #define nFault 14       //Fault reading
-#define cs 5           //DRV8305 Chip-select
-#define so1 36
-#define so2 35
-#define so3 34
+#define cs 5            //DRV8305 Chip-select
 bool faultTrig = false;
 
 //######_MA730_######
@@ -39,7 +36,7 @@ float runTime, prevT = 0, timeDif, stateT, sampleTime;
 int timeInterval = 1000, totalTempTime;
 long swingDownTime = 0, swingUpTime = 0;
 
-//#####_Control Variables_#####
+//#####_CONTROL VARIABLES_#####
 float target_voltage;         // Voltage applied to the motor depending on the corresponding control algorithm
 bool overTurn = false;        // if many turn have occured (encoder cable chocking with no slip ring)
 float cosFourth = 0;          // Term used for the Energy Shaping Controller
@@ -47,31 +44,28 @@ int energy = 0;               // decided wether to use evergy shaping for swing-
 bool sSwitch = false;         // decide if stability has been achieved
 float balanceAngle = 0.5;     // Threshold to switch between controllers
 
-//Gains of controllers
+//####_GAINS OF THE CONTROLLERS_#####
 // LQR
 float k1 = 1.65;
 float k2 = 0.14;
 float k3 = 0.033;
 float k4 = 0.015;
-// Return from overturn (P controller)
+// P controller (return from overturning)
 float k5 = 1;
 // Energy Shaping
 float k6 = 0.00365;
 
 //####_SIMPLEFOC INSTANCES_####
-BLDCMotor motor = BLDCMotor(pp);   //BLDCMotor instance
+BLDCMotor motor = BLDCMotor(pp);                        //BLDCMotor instance
 BLDCDriver3PWM driver = BLDCDriver3PWM(25, 26, 27);     //3PWM Driver instance
-Encoder sensor = Encoder(Int1, Int2, 1024);       // Quadrature encoder instance
 
-// Interrupt routine intialisation
-// channel A and B callbacks
-void doA(){sensor.handleA();}
-void doB(){sensor.handleB();}
+Encoder sensor = Encoder(Int1, Int2, 1024);       // Quadrature encoder instance for motor control
+void doA(){sensor.handleA();}                     // Interrupt routine intialisation
+void doB(){sensor.handleB();}                     // channel A and B callbacks
 
-Encoder pend = Encoder(21, 22, 600);
-
-void doA2(){pend.handleA();}
-void doB2(){pend.handleB();}
+Encoder pend = Encoder(21, 22, 600);      // Quadrature encoder instance for the pendulum
+void doA2(){pend.handleA();}              // Interrupt routine intialisation
+void doB2(){pend.handleB();}              // channel A and B callbacks
 
 Commander command = Commander(Serial);
 void doM(char* cmd){ command.motor(&motor, cmd); }
@@ -81,7 +75,7 @@ LowPassFilter LPFmot{0.1};
 LowPassFilter LPFswitch{0.02};
 LowPassFilter LPFvoltage{0.02};
 
-//--------------------------------------------Set-up--------------------------------------------
+//-------------------------------------Set-up-------------------------------------------
 void setup() {
   Serial.begin(115200);
 
@@ -97,9 +91,6 @@ void setup() {
   Serial.println("Pendulum Sensor Ready.");
 
   //Pinmodes
-  pinMode(so1, INPUT);
-  pinMode(so2, INPUT);
-  pinMode(so3, INPUT);
   pinMode(nFault, INPUT);
   pinMode(enGate, OUTPUT);
   digitalWrite(enGate, LOW);
@@ -126,7 +117,7 @@ void setup() {
   motor.linkSensor(&sensor);
   
   // driver config, power supply voltage [V]
-  driver.voltage_power_supply = 12.1;
+  driver.voltage_power_supply = sourceVoltage;
   driver.init();
   motor.linkDriver(&driver);
   motor.controller = MotionControlType::torque;
@@ -153,7 +144,7 @@ void setup() {
   
 }
 
-//--------------------------------------------Loop--------------------------------------------
+//---------------------------------------Loop-------------------------------------------
 void loop() {
   motor.loopFOC();
   serialEvent();
@@ -169,7 +160,7 @@ void loop() {
   stateT += timeDif;
   sampleTime += timeDif;
 
-  // control loop each ~05ms (100 Hz)
+  // control loop each ~10ms (100 Hz)
   if (sampleTime >= 10000){
     sampleTime = 0;
     // calculate the pendulum angle and velocity, and motor angle and velocity with respective filtering
@@ -188,10 +179,11 @@ void loop() {
         
         // Uses LQR with stronger gains for the transition between swing-up and up-right position
         if(sSwitch == false){
+          //LQR controller with gains that saturate the controller to help with the transition from swing-up to up-right
           target_voltage = controllerLQR( pendulum_angle, pendulum_velocity_switch, motor_velocity, motor_angle, 4, 0.15, 0.033, 0 );
+          // if pendulum is up-right after a defined time change to LQR with great balance gains
           if (abs(pendulum_angle) < 0.2) swingUpTime += timeDif;
           else swingUpTime = 0;
-          // if pendulum is up-right after a defined time change to LQR with great balance gains
           if (swingUpTime >= 200) {
             sSwitch = true;
             swingUpTime = 0;
@@ -253,7 +245,7 @@ void loop() {
 
   }
 
-  //Functions inside this "if" will execute at a 5hz rate
+  // 5 Hz function caller for Janus Controller security features. 
   if(stateT >= 200000){
     stateT = 0;
     tempStatus();         //Check Janus controller power-stage temperature
@@ -262,6 +254,7 @@ void loop() {
   }
   
 }
+
 
 //----------------------------------Control Functions-----------------------------------
 
@@ -303,7 +296,7 @@ float energyShaping(float p_angle, float p_vel, float c6){
   return u;
 }
 
-// Tune the LQR controller, the stability angle and energy shaping controller from the Serial monitor.
+// Tune the LQR controller, the threshold transition angle and energy shaping controller from the Serial monitor.
 void serialEvent() {
   // a string to hold incoming data
   static String inputString;
@@ -359,8 +352,8 @@ void spaceGains(){
 }
 
 
-//-------------------------------------Janus Controller Functions--------------------------------------
 
+//-------------------------------------Janus Controller Functions--------------------------------------
 
 //Temperature status and manager
 void tempStatus(){
